@@ -894,6 +894,8 @@ async function renderStudentClaim(sdat) {
     onClick: async (t) => {
       try {
         await claimTeam(activeSessionId, t);
+        // Immediately transition UI after a successful claim
+        await renderStudentLobby(lastSessionDoc);
       } catch (err) {
         alert(err.message || String(err));
       }
