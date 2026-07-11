@@ -1,1 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pricing Game</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__left">
+      <div class="brand">Pricing Game</div>
+      <div class="env" id="envBadge" hidden>Firebase connected</div>
+    </div>
+    <div class="topbar__right">
+      <button class="btn btn--ghost" id="btnHome" title="Home">Home</button>
+    </div>
+  </header>
 
+  <main class="container" id="app">
+    <section class="card" id="screenLoading">
+      <h1>Loading…</h1>
+      <p class="muted">Initializing realtime connection.</p>
+    </section>
+
+    <section class="card" id="screenHome" hidden>
+      <h1>Join or Host</h1>
+      <p class="muted">Choose Student or Instructor.</p>
+      <div class="grid2">
+        <div class="panel">
+          <h2>Student</h2>
+          <p class="muted">Join a live session and claim a team number.</p>
+          <button class="btn" id="btnStudent">Student join</button>
+        </div>
+        <div class="panel">
+          <h2>Instructor</h2>
+          <p class="muted">Create and run a session (PIN required).</p>
+          <button class="btn" id="btnInstructor">Instructor</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Student flow -->
+    <section class="card" id="screenStudentJoin" hidden>
+      <h1>Student join</h1>
+      <label class="label">Join code</label>
+      <input class="input" id="studentJoinCode" placeholder="e.g., 7Q3K" autocomplete="off" />
+      <div class="row">
+        <button class="btn" id="btnStudentJoin">Continue</button>
+        <button class="btn btn--ghost" id="btnStudentBack">Back</button>
+      </div>
+      <p class="muted small">If your instructor provided a QR code, you may already have the join code filled in.</p>
+    </section>
+
+    <section class="card" id="screenStudentClaim" hidden>
+      <h1>Claim a team</h1>
+      <div class="pill" id="studentSessionBadge"></div>
+      <div class="row spread">
+        <div>
+          <div class="muted small">Available teams</div>
+          <div class="small" id="joinLockedNotice" hidden><strong>Joining is locked.</strong> Ask your instructor for help.</div>
+        </div>
+        <button class="btn btn--ghost" id="btnStudentLeave">Leave</button>
+      </div>
+      <div id="teamList" class="teamlist"></div>
+      <p class="muted small">Teams lock on first claim. Only one device per team.</p>
+    </section>
+
+    <section class="card" id="screenStudentLobby" hidden>
+      <h1>Waiting…</h1>
+      <div class="pill">You are <strong id="studentTeamLabel"></strong></div>
+      <p class="muted">Waiting for the instructor to start Round 1.</p>
+      <div class="muted small" id="studentConnection"></div>
+    </section>
+
+    <section class="card" id="screenStudentRound" hidden>
+      <h1>Submit price</h1>
+      <div class="roundHeader" id="studentRoundHeader"></div>
+
+      <div class="grid2">
+        <div>
+          <label class="label">Price</label>
+          <input class="input" id="priceInput" inputmode="decimal" />
+          <div class="muted small" id="priceBoundsLabel"></div>
+        </div>
+        <div>
+          <div id="adBlock" hidden>
+            <label class="label">Advertising</label>
+            <label class="toggle">
+              <input type="checkbox" id="adToggle" />
+              <span>Buy advertising this round</span>
+            </label>
+            <div class="muted small" id="adDetails"></div>
+          </div>
+          <div id="adOffNotice" class="muted small" hidden>Advertising is not available this round.</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn" id="btnSubmit">Submit</button>
+      </div>
+      <div class="muted small" id="submitHelp"></div>
+    </section>
+
+    <section class="card" id="screenStudentSubmitted" hidden>
+      <h1>Locked in</h1>
+      <div class="pill">Team <strong id="submittedTeam"></strong></div>
+      <p class="muted">Submission confirmed. Waiting for round to end.</p>
+      <div class="muted small" id="submittedSummary"></div>
+    </section>
+
+    <section class="card" id="screenStudentResults" hidden>
+      <h1>Results</h1>
+      <div class="roundHeader" id="studentResultsHeader"></div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h2>Your result</h2>
+          <div class="kv" id="yourResult"></div>
+        </div>
+        <div class="panel">
+          <h2>Market summary</h2>
+          <div class="kv" id="marketAgg"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="fullTablePanel" hidden>
+        <h2>All teams</h2>
+        <div class="tableWrap">
+          <table class="table" id="fullResultsTable"></table>
+        </div>
+      </div>
+
+      <p class="muted small">Waiting for the next round to start.</p>
+    </section>
+
+    <section class="card" id="screenStudentFinal" hidden>
+      <h1>Final leaderboard</h1>
+      <div class="tableWrap">
+        <table class="table" id="finalTable"></table>
+      </div>
+      <p class="muted small">Thanks for playing.</p>
+    </section>
+
+    <!-- Instructor flow -->
+    <section class="card" id="screenInstructorPIN" hidden>
+      <h1>Instructor</h1>
+      <p class="muted">Enter your instructor PIN to access instructor features for an existing session, or create a new session.</p>
+      <div class="grid2">
+        <div class="panel">
+          <h2>Create new session</h2>
+          <button class="btn" id="btnCreateSession">Create session</button>
+        </div>
+        <div class="panel">
+          <h2>Open existing session</h2>
+          <label class="label">Join code</label>
+          <input class="input" id="instructorJoinCode" placeholder="e.g., 7Q3K" autocomplete="off" />
+          <label class="label">Instructor PIN</label>
+          <input class="input" id="instructorPIN" placeholder="PIN" autocomplete="off" type="password" />
+          <div class="row">
+            <button class="btn" id="btnOpenSession">Open</button>
+            <button class="btn btn--ghost" id="btnInstructorBack">Back</button>
+          </div>
+          <div class="muted small" id="instructorOpenHelp"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="screenInstructorCreate" hidden>
+      <h1>Create session</h1>
+      <div class="grid2">
+        <div>
+          <label class="label">Instructor PIN</label>
+          <input class="input" id="createPIN" placeholder="Choose a PIN" type="password" />
+
+          <label class="label">Teams (N)</label>
+          <input class="input" id="createN" type="number" min="2" max="20" />
+
+          <label class="label">Rounds</label>
+          <input class="input" id="createR" type="number" min="1" max="10" />
+
+          <label class="label">Timer (seconds)</label>
+          <input class="input" id="createT" type="number" min="10" max="300" />
+        </div>
+        <div>
+          <label class="label">Price min</label>
+          <input class="input" id="createPmin" type="number" step="0.1" />
+
+          <label class="label">Price max</label>
+          <input class="input" id="createPmax" type="number" step="0.1" />
+
+          <label class="label">Step</label>
+          <input class="input" id="createStep" type="number" step="0.1" />
+
+          <label class="label">Cost (c)</label>
+          <input class="input" id="createC" type="number" step="0.1" />
+
+          <label class="label">Demand (Q)</label>
+          <input class="input" id="createQ" type="number" step="1" />
+
+          <label class="label">Exponent (k) in 1/p^k</label>
+          <input class="input" id="createK" type="number" step="0.1" />
+
+          <label class="toggle">
+            <input type="checkbox" id="createFullDefault" />
+            <span>Round 1 visibility: Full transparency (unchecked = Private+aggregates)</span>
+          </label>
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn" id="btnCreateConfirm">Create</button>
+        <button class="btn btn--ghost" id="btnCreateCancel">Cancel</button>
+      </div>
+      <div class="muted small" id="createHelp"></div>
+    </section>
+
+    <section class="card" id="screenInstructorLobby" hidden>
+      <h1>Instructor lobby</h1>
+      <div class="grid2">
+        <div class="panel">
+          <h2>Students join</h2>
+          <div class="muted small">Join code</div>
+          <div class="bigcode" id="joinCodeBig"></div>
+          <div class="qrWrap">
+            <canvas id="qrCanvas" width="256" height="256"></canvas>
+          </div>
+          <div class="muted small">Student join URL</div>
+          <div class="mono small" id="joinUrl"></div>
+        </div>
+        <div class="panel">
+          <h2>Teams</h2>
+          <div class="muted small" id="lobbyStatus"></div>
+          <div id="instructorTeamList" class="teamlist"></div>
+          <div class="row">
+            <button class="btn" id="btnStartRound1">Start Round 1</button>
+          </div>
+          <p class="muted small">You can release a claimed team only before Round 1 starts.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="screenInstructorRound" hidden>
+      <h1>Round in progress</h1>
+      <div class="roundHeader" id="instructorRoundHeader"></div>
+      <div class="grid2">
+        <div class="panel">
+          <h2>Timer</h2>
+          <div class="timer" id="timerBig">--:--</div>
+          <div class="muted small" id="timerNote"></div>
+          <div class="row">
+            <button class="btn" id="btnCloseEarly">Close round early</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Submissions</h2>
+          <div class="kv" id="submissionStats"></div>
+          <div class="muted small">Not submitted:</div>
+          <div class="chips" id="missingTeams"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="screenInstructorBetween" hidden>
+      <h1>Between rounds</h1>
+      <div class="roundHeader" id="betweenHeader"></div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h2>Next round settings</h2>
+          <label class="label">Visibility</label>
+          <select class="input" id="nextVisibility">
+            <option value="private">Private + aggregates</option>
+            <option value="full">Full transparency</option>
+          </select>
+
+          <label class="toggle">
+            <input type="checkbox" id="nextAdEnabled" />
+            <span>Enable advertising next round</span>
+          </label>
+          <div id="nextAdFields" hidden>
+            <label class="label">Ad fee ($)</label>
+            <input class="input" id="nextAdFee" type="number" step="1" />
+            <label class="label">Weight multiplier (e.g., 1.2)</label>
+            <input class="input" id="nextAdMult" type="number" step="0.01" />
+          </div>
+
+          <div class="row">
+            <button class="btn" id="btnStartNext">Start next round</button>
+            <button class="btn btn--danger" id="btnEndEarly">End game early</button>
+          </div>
+          <div class="muted small" id="betweenHelp"></div>
+        </div>
+        <div class="panel">
+          <h2>Round results (instructor)</h2>
+          <div class="tableWrap">
+            <table class="table" id="instructorResultsTable"></table>
+          </div>
+          <div class="row">
+            <button class="btn btn--ghost" id="btnExport">Export CSV</button>
+          </div>
+          <div class="muted small" id="exportHelp"></div>
+        </div>
+      </div>
+
+      <dialog id="confirmEndDialog">
+        <form method="dialog" class="dialog">
+          <h3>End game early?</h3>
+          <p>This will end the game immediately and show the final leaderboard using completed rounds so far.</p>
+          <div class="row">
+            <button class="btn btn--danger" value="confirm" id="confirmEndBtn">Yes, end now</button>
+            <button class="btn btn--ghost" value="cancel">Cancel</button>
+          </div>
+        </form>
+      </dialog>
+    </section>
+
+    <section class="card" id="screenInstructorFinal" hidden>
+      <h1>Game ended</h1>
+      <div class="row spread">
+        <div class="roundHeader" id="finalHeader"></div>
+        <button class="btn btn--ghost" id="btnFinalExport">Export CSV</button>
+      </div>
+      <div class="tableWrap">
+        <table class="table" id="instructorFinalTable"></table>
+      </div>
+      <div class="row">
+        <button class="btn" id="btnResetReplay">Reset & replay (new session)</button>
+      </div>
+      <div class="muted small" id="finalHelp"></div>
+    </section>
+
+    <!-- Confirm modal for student submit -->
+    <dialog id="confirmSubmitDialog">
+      <form method="dialog" class="dialog">
+        <h3>Confirm submission</h3>
+        <div class="kv" id="confirmSummary"></div>
+        <div class="row">
+          <button class="btn" value="confirm" id="confirmSubmitBtn">Confirm</button>
+          <button class="btn btn--ghost" value="cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+
+  <!-- Firebase (modular v9 via CDN) -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
