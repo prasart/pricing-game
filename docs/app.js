@@ -784,16 +784,20 @@ async function renderInstructorLobby(sdat) {
   });
   void(qr);
 
+  // teams (realtime)
   const nTeams = sdat.params.nTeams;
 
   teamsUnsub?.();
   teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
+    console.log("Instructor lobby teams snapshot:", tSnap.size);
+    
     const claimedMap = new Map();
     tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
     const claimedCount = [...claimedMap.values()].filter(Boolean).length;
     $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
 
   renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });
+  });    
 }
 
 async function renderInstructorRound(sdat) {
