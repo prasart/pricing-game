@@ -794,9 +794,10 @@ async function renderInstructorLobby(sdat) {
     const claimedMap = new Map();
     tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
     const claimedCount = [...claimedMap.values()].filter(Boolean).length;
+    
     $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
-
-  renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });   
+    renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });   
+  });
 }
 
 async function renderInstructorRound(sdat) {
