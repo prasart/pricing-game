@@ -785,11 +785,13 @@ async function renderInstructorLobby(sdat) {
   void(qr);
 
   const nTeams = sdat.params.nTeams;
-  const claimedMap = new Map();
-  const tSnap = await getDocs(teamsCol(activeSessionId));
-  tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
-  const claimedCount = [...claimedMap.values()].filter(Boolean).length;
-  $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
+
+  teamsUnsub?.();
+  teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
+    const claimedMap = new Map();
+    tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
+    const claimedCount = [...claimedMap.values()].filter(Boolean).length;
+    $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
 
   renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });
 }
