@@ -90,9 +90,12 @@ let joinCode = null;
 let teamNumber = null;
 let teamToken = null;
 let instructorAuthed = false;
+
 let sessionUnsub = null;
 let teamUnsub = null;
 let submissionsUnsub = null;
+let teamsUnsub = null; // NEW: live team list updates
+
 let lastSessionDoc = null;
 
 // local storage keys
@@ -102,10 +105,10 @@ const LS = {
 };
 
 function cleanupSubs() {
-  for (const u of [sessionUnsub, teamUnsub, submissionsUnsub]) {
+  for (const u of [sessionUnsub, teamUnsub, submissionsUnsub, teamsUnsub]) {
     try { if (typeof u === "function") u(); } catch {}
   }
-  sessionUnsub = teamUnsub = submissionsUnsub = null;
+  sessionUnsub = teamUnsub = submissionsUnsub = teamsUnsub = null;
 }
 
 function hideAllScreens() {
@@ -128,7 +131,6 @@ const sessionsCol = () => collection(db, "sessions");
 const sessionDoc = (sessionId) => doc(db, "sessions", sessionId);
 const teamsCol = (sessionId) => collection(db, "sessions", sessionId, "teams");
 const teamDoc = (sessionId, teamNum) => doc(db, "sessions", sessionId, "teams", String(teamNum));
-const roundsCol = (sessionId) => collection(db, "sessions", sessionId, "rounds");
 const roundDoc = (sessionId, roundNum) => doc(db, "sessions", sessionId, "rounds", String(roundNum));
 const submissionsCol = (sessionId, roundNum) => collection(db, "sessions", sessionId, "rounds", String(roundNum), "submissions");
 const submissionDoc = (sessionId, roundNum, teamNum) => doc(db, "sessions", sessionId, "rounds", String(roundNum), "submissions", String(teamNum));
@@ -139,8 +141,6 @@ const resultDoc = (sessionId, roundNum, teamNum) => doc(db, "sessions", sessionI
 // Session creation
 // =========================
 async function createSession({ pin, params }) {
-  // joinCode -> sessionId mapping stored in sessions using joinCode field (unique enough for classroom)
-  // sessionId: random doc id
   const pinHash = await sha256Hex(pin);
 
   // attempt unique join code
@@ -173,7 +173,6 @@ async function createSession({ pin, params }) {
       Q: params.Q,
       k: params.k,
     },
-    // round 1 config stored under rounds/1
     instructor: {
       pinHash,
       createdByUid: uid,
@@ -228,7 +227,6 @@ async function getSessionIdFromJoinCode(code) {
   const qy = query(sessionsCol(), where("joinCode", "==", code));
   const snap = await getDocs(qy);
   if (snap.empty) return null;
-  // should be 1
   return snap.docs[0].id;
 }
 
@@ -251,6 +249,18 @@ async function claimTeam(sessionId, teamNum) {
     if (!tSnap.exists()) throw new Error("Team missing");
     const tdat = tSnap.data();
     if (tdat.claimed) throw new Error("Team already claimed");
+
+    // NEW: enforce one team per device/user (anonymous uid) per session
+    for (let t = 1; t <= sdat.params.nTeams; t++) {
+      const otherRef = teamDoc(sessionId, t);
+      const otherSnap = await tx.get(otherRef);
+      if (otherSnap.exists()) {
+        const od = otherSnap.data();
+        if (od.claimed && od.claimedByUid === uid) {
+          throw new Error(`This device already claimed Team ${t}.`);
+        }
+      }
+    }
 
     tx.update(tref, {
       claimed: true,
@@ -334,7 +344,6 @@ async function startRound(sessionId, roundNum) {
 
 async function closeRound(sessionId, roundNum) {
   if (!instructorAuthed) throw new Error("Not authed");
-  // Mark closedAt; then assign missing submissions; then compute results.
   const sSnap = await getDoc(sessionDoc(sessionId));
   if (!sSnap.exists()) throw new Error("Session missing");
   const sdat = sSnap.data();
@@ -358,10 +367,8 @@ async function closeRound(sessionId, roundNum) {
   }
   await Promise.all(writes);
 
-  // compute results
   await computeAndStoreResults(sessionId, roundNum);
 
-  // move session to between or ended
   if (roundNum >= sdat.params.rounds) {
     await updateDoc(sessionDoc(sessionId), { status: "ended" });
   } else {
@@ -424,7 +431,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
   });
   const wsum = weights.reduce((a,b)=>a+b,0);
 
-  // compute per-team
   const res = submissions.map((s, idx) => {
     const share = wsum > 0 ? (weights[idx] / wsum) : (1 / params.nTeams);
     const q = share * Number(params.Q);
@@ -441,7 +447,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
   });
 
   // cumulative
-  // Sum prior stored results if any
   const cum = new Map();
   for (let r = 1; r < roundNum; r++) {
     const prevResSnap = await getDocs(resultsCol(sessionId, r));
@@ -491,7 +496,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
     topProfitRound: topProfit,
   };
 
-  // write results
   const writes = [];
   res.forEach(x => {
     writes.push(setDoc(resultDoc(sessionId, roundNum, x.teamNumber), {
@@ -519,7 +523,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
 // Student submission
 // =========================
 async function submitTeam(sessionId, roundNum, teamNum, { price, ad }) {
-  // Enforce: if advertising off, force ad=false; also enforce bounds & step.
   const [sSnap, rSnap] = await Promise.all([getDoc(sessionDoc(sessionId)), getDoc(roundDoc(sessionId, roundNum))]);
   const sdat = sSnap.data();
   const rdat = rSnap.data();
@@ -528,7 +531,6 @@ async function submitTeam(sessionId, roundNum, teamNum, { price, ad }) {
   const adEnabled = !!rdat.adEnabled;
   const finalAd = adEnabled ? !!ad : false;
 
-  // One-shot: if exists already, do nothing
   await runTransaction(db, async (tx) => {
     const sref = sessionDoc(sessionId);
     const subref = submissionDoc(sessionId, roundNum, teamNum);
@@ -536,7 +538,7 @@ async function submitTeam(sessionId, roundNum, teamNum, { price, ad }) {
     if (!ss.exists()) throw new Error("Session missing");
     const sdat2 = ss.data();
     if (sdat2.status !== "round_active" || sdat2.currentRound !== roundNum) throw new Error("Round not active");
-    if (sub.exists()) return; // already submitted
+    if (sub.exists()) return;
     tx.set(subref, {
       teamNumber: teamNum,
       price: p,
@@ -586,7 +588,7 @@ async function exportCSV(sessionId) {
 
   const csv = rows.map(r => r.map(v => {
     const s = String(v ?? "");
-    if (/[\",\n]/.test(s)) return '"' + s.replaceAll('"','""') + '"';
+    if (/[",\n]/.test(s)) return '"' + s.replaceAll('"','""') + '"';
     return s;
   }).join(",")).join("\n");
 
@@ -733,9 +735,8 @@ async function subscribeSession(sessionId) {
     lastSessionDoc = snap.data();
     const sdat = lastSessionDoc;
 
-    // route rendering depends on role
     if (role === "instructor") {
-      if (!instructorAuthed) return; // waiting for PIN auth screen
+      if (!instructorAuthed) return;
 
       if (sdat.status === "lobby") {
         await renderInstructorLobby(sdat);
@@ -750,11 +751,9 @@ async function subscribeSession(sessionId) {
 
     if (role === "student") {
       if (!teamNumber) {
-        // still claiming
         await renderStudentClaim(sdat);
         return;
       }
-      // student state transitions
       if (sdat.status === "lobby") {
         await renderStudentLobby(sdat);
       } else if (sdat.status === "round_active") {
@@ -776,7 +775,6 @@ async function renderInstructorLobby(sdat) {
   const joinUrl = `${location.origin}${location.pathname}#student?code=${encodeURIComponent(sdat.joinCode)}`;
   $("joinUrl").textContent = joinUrl;
 
-  // QR
   const qr = new QRious({
     element: $("qrCanvas"),
     value: joinUrl,
@@ -786,7 +784,6 @@ async function renderInstructorLobby(sdat) {
   });
   void(qr);
 
-  // teams
   const nTeams = sdat.params.nTeams;
   const claimedMap = new Map();
   const tSnap = await getDocs(teamsCol(activeSessionId));
@@ -804,7 +801,8 @@ async function renderInstructorRound(sdat) {
   const r = sdat.currentRound;
   const rSnap = await getDoc(roundDoc(activeSessionId, r));
   const rdat = rSnap.data();
-  $("instructorRoundHeader").textContent = `Round ${r} of ${sdat.params.rounds} • Visibility: ${rdat.visibility === "full" ? "Full" : "Private"} • Advertising: ${rdat.adEnabled ? `ON (fee $${rdat.adFee}, ×${rdat.adMult})` : "OFF"}`;
+  $("instructorRoundHeader").textContent =
+    `Round ${r} of ${sdat.params.rounds} • Visibility: ${rdat.visibility === "full" ? "Full" : "Private"} • Advertising: ${rdat.adEnabled ? `ON (fee $${rdat.adFee}, ×${rdat.adMult})` : "OFF"}`;
 
   startTimerLoop(rdat.endsAt);
 
@@ -837,13 +835,11 @@ async function renderInstructorBetween(sdat) {
   const r = sdat.currentRound;
   $("betweenHeader").textContent = `Round ${r} complete • Configure Round ${r+1}`;
 
-  // Show results table (always for instructor)
   const rs = await getDocs(resultsCol(activeSessionId, r));
   const rows = rs.docs.map(d => d.data()).sort((a,b)=>a.rankRound-b.rankRound || a.teamNumber-b.teamNumber);
   const adEnabled = rows[0]?.adEnabled ?? false;
   renderResultsTable($("instructorResultsTable"), rows, { showAd: adEnabled });
 
-  // Set defaults for next round config
   const next = r + 1;
   if (next <= sdat.params.rounds) {
     const nextSnap = await getDoc(roundDoc(activeSessionId, next));
@@ -862,7 +858,6 @@ async function renderInstructorFinal(sdat) {
 
   $("finalHeader").textContent = `Completed rounds: ${sdat.currentRound} of ${sdat.params.rounds}`;
 
-  // Use latest available results to build final table
   const R = sdat.currentRound;
   if (R === 0) {
     $("instructorFinalTable").innerHTML = "";
@@ -884,22 +879,23 @@ async function renderStudentClaim(sdat) {
   const joinLocked = sdat.joinLocked || sdat.status !== "lobby";
   $("joinLockedNotice").hidden = !joinLocked;
 
-  // fetch team claims
-  const tSnap = await getDocs(teamsCol(activeSessionId));
-  const claimedMap = new Map();
-  tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
+  // NEW: live team claims listener so buttons update immediately
+  teamsUnsub?.();
+  teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
+    const claimedMap = new Map();
+    tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
 
-  renderTeamButtons($("teamList"), sdat.params.nTeams, claimedMap, {
-    disabledAll: joinLocked,
-    onClick: async (t) => {
-      try {
-        await claimTeam(activeSessionId, t);
-        // Immediately transition UI after a successful claim
-        await renderStudentLobby(lastSessionDoc);
-      } catch (err) {
-        alert(err.message || String(err));
+    renderTeamButtons($("teamList"), sdat.params.nTeams, claimedMap, {
+      disabledAll: joinLocked,
+      onClick: async (t) => {
+        try {
+          await claimTeam(activeSessionId, t);
+          await renderStudentLobby(lastSessionDoc);
+        } catch (err) {
+          alert(err.message || String(err));
+        }
       }
-    }
+    });
   });
 }
 
@@ -925,24 +921,21 @@ async function renderStudentRound(sdat) {
 
   $("priceBoundsLabel").textContent = `Allowed: $${fmtPrice1(sdat.params.pMin)} to $${fmtPrice1(sdat.params.pMax)} (step ${sdat.params.pStep})`;
 
-  // ad toggle visibility
   if (rdat.adEnabled) {
     $("adBlock").hidden = false;
     $("adOffNotice").hidden = true;
     $("adDetails").textContent = `Fee $${rdat.adFee}. Weight multiplier ×${rdat.adMult}.`;
   } else {
     $("adBlock").hidden = true;
-    $("adOffNotice").hidden = true; // hide entirely per requirement
+    $("adOffNotice").hidden = true;
   }
 
-  // check if already submitted
   const subSnap = await getDoc(submissionDoc(activeSessionId, r, teamNumber));
   if (subSnap.exists()) {
     await renderStudentSubmitted(sdat);
     return;
   }
 
-  // default price input
   if (!$("priceInput").value) $("priceInput").value = fmtPrice1(sdat.params.pMin);
 
   $("submitHelp").textContent = "Submit once. You will be asked to confirm.";
@@ -994,7 +987,6 @@ async function renderStudentResults(sdat) {
     "Top profit (round)": agg.topProfitRound != null ? fmtMoney0(agg.topProfitRound) : "—",
   });
 
-  // full table if round visibility is full
   if (y.visibility === "full") {
     $("fullTablePanel").hidden = false;
     const rs = await getDocs(resultsCol(activeSessionId, r));
@@ -1023,7 +1015,14 @@ async function renderStudentFinal(sdat) {
 // Navigation and event wiring
 // =========================
 function wireUI() {
-  $("btnHome").addEventListener("click", () => { cleanupSubs(); role=""; instructorAuthed=false; teamNumber=null; activeSessionId=null; setHashRoute("home"); });
+  $("btnHome").addEventListener("click", () => {
+    cleanupSubs();
+    role = "";
+    instructorAuthed = false;
+    teamNumber = null;
+    activeSessionId = null;
+    setHashRoute("home");
+  });
 
   // home
   $("btnStudent").addEventListener("click", () => setHashRoute("student"));
@@ -1038,54 +1037,10 @@ function wireUI() {
     if (!sid) { alert("Join code not found"); return; }
     role = "student";
     joinCode = code;
-    // try auto rejoin
     await subscribeSession(sid);
-    const ok = await tryAutoRejoin(sid);
-    if (ok) {
-      // session snapshot will render
-    } else {
-      // will show claim screen
-    }
+    await tryAutoRejoin(sid);
   });
   $("btnStudentLeave").addEventListener("click", ()=> setHashRoute("home"));
-
-  // student submit
-  $("btnSubmit").addEventListener("click", async ()=> {
-    const sdat = lastSessionDoc;
-    if (!sdat || sdat.status !== "round_active") return;
-    const r = sdat.currentRound;
-    const rSnap = await getDoc(roundDoc(activeSessionId, r));
-    const rdat = rSnap.data();
-
-    const rawPrice = Number($("priceInput").value);
-    if (!Number.isFinite(rawPrice)) { alert("Enter a valid price"); return; }
-
-    const p = clampStep(rawPrice, sdat.params.pMin, sdat.params.pMax, sdat.params.pStep);
-    const ad = rdat.adEnabled ? $("adToggle").checked : false;
-
-    // confirm modal
-    const sum = {
-      "Team": `Team ${teamNumber}`,
-      "Price": `$${fmtPrice1(p)}`,
-      ...(rdat.adEnabled ? { "Advertising": ad ? "Yes" : "No" } : {}),
-    };
-    renderKV($("confirmSummary"), sum);
-
-    const dlg = $("confirmSubmitDialog");
-    dlg.showModal();
-
-    const onClose = async () => {
-      dlg.removeEventListener("close", onClose);
-      if (dlg.returnValue !== "confirm") return;
-      try {
-        const out = await submitTeam(activeSessionId, r, teamNumber, { price: p, ad });
-        $("submittedSummary").textContent = `Submitted: $${fmtPrice1(out.price)} • Advertising: ${out.ad ? "Yes" : "No"}`;
-      } catch (err) {
-        alert(err.message || String(err));
-      }
-    };
-    dlg.addEventListener("close", onClose);
-  });
 
   // instructor
   $("btnInstructorBack").addEventListener("click", ()=> setHashRoute("home"));
@@ -1107,7 +1062,7 @@ function wireUI() {
     }
   });
 
-  // create session inputs init
+  // create session
   $("btnCreateConfirm").addEventListener("click", async ()=> {
     const pin = $("createPIN").value.trim();
     if (!pin) { $("createHelp").textContent = "PIN required."; return; }
@@ -1128,7 +1083,6 @@ function wireUI() {
 
     try {
       const out = await createSession({ pin, params });
-      // auto open instructor view
       await instructorAuth(out.sessionId, pin);
       role = "instructor";
       joinCode = out.joinCode;
@@ -1200,8 +1154,44 @@ function wireUI() {
   });
 
   $("btnResetReplay").addEventListener("click", ()=> {
-    // simplest: go back to create screen
     setHashRoute("create");
+  });
+
+  // student submit (same as before)
+  $("btnSubmit").addEventListener("click", async ()=> {
+    const sdat = lastSessionDoc;
+    if (!sdat || sdat.status !== "round_active") return;
+    const r = sdat.currentRound;
+    const rSnap = await getDoc(roundDoc(activeSessionId, r));
+    const rdat = rSnap.data();
+
+    const rawPrice = Number($("priceInput").value);
+    if (!Number.isFinite(rawPrice)) { alert("Enter a valid price"); return; }
+
+    const p = clampStep(rawPrice, sdat.params.pMin, sdat.params.pMax, sdat.params.pStep);
+    const ad = rdat.adEnabled ? $("adToggle").checked : false;
+
+    const sum = {
+      "Team": `Team ${teamNumber}`,
+      "Price": `$${fmtPrice1(p)}`,
+      ...(rdat.adEnabled ? { "Advertising": ad ? "Yes" : "No" } : {}),
+    };
+    renderKV($("confirmSummary"), sum);
+
+    const dlg = $("confirmSubmitDialog");
+    dlg.showModal();
+
+    const onClose = async () => {
+      dlg.removeEventListener("close", onClose);
+      if (dlg.returnValue !== "confirm") return;
+      try {
+        const out = await submitTeam(activeSessionId, r, teamNumber, { price: p, ad });
+        $("submittedSummary").textContent = `Submitted: $${fmtPrice1(out.price)} • Advertising: ${out.ad ? "Yes" : "No"}`;
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    };
+    dlg.addEventListener("close", onClose);
   });
 }
 
@@ -1252,7 +1242,6 @@ async function handleRoute() {
     return;
   }
 
-  // fallback
   show("screenHome");
 }
 
