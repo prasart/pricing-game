@@ -796,8 +796,7 @@ async function renderInstructorLobby(sdat) {
     const claimedCount = [...claimedMap.values()].filter(Boolean).length;
     $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
 
-  renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });
-  });    
+  renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });   
 }
 
 async function renderInstructorRound(sdat) {
