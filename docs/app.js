@@ -92,7 +92,7 @@ let teamNumber = null;
 let teamToken = null;
 
 let instructorAuthed = false;
-let instructorKey = null; // NEW: stored in localStorage for instructor writes
+let instructorKey = null;
 
 let sessionUnsub = null;
 let teamUnsub = null;
@@ -141,13 +141,14 @@ const submissionDoc = (sessionId, roundNum, teamNum) => doc(db, "sessions", sess
 const resultsCol = (sessionId, roundNum) => collection(db, "sessions", sessionId, "rounds", String(roundNum), "results");
 const resultDoc = (sessionId, roundNum, teamNum) => doc(db, "sessions", sessionId, "rounds", String(roundNum), "results", String(teamNum));
 
+// NEW: players mapping
+const playerDoc = (sessionId, uid) => doc(db, "sessions", sessionId, "players", uid);
+
 // =========================
 // Session creation
 // =========================
 async function createSession({ pin, params }) {
   const pinHash = await sha256Hex(pin);
-
-  // NEW: instructorKey used for instructor-only writes (rules-only gate)
   const newInstructorKey = crypto.randomUUID();
 
   // attempt unique join code
@@ -169,7 +170,7 @@ async function createSession({ pin, params }) {
     status: "lobby", // lobby|round_active|between|ended
     joinLocked: false,
     currentRound: 0,
-    instructorKey: newInstructorKey, // NEW
+    instructorKey: newInstructorKey,
     params: {
       nTeams: params.nTeams,
       rounds: params.rounds,
@@ -189,7 +190,6 @@ async function createSession({ pin, params }) {
 
   await setDoc(sessionRef, sessionData);
 
-  // create teams docs
   const teamWrites = [];
   for (let t = 1; t <= params.nTeams; t++) {
     teamWrites.push(setDoc(teamDoc(sid, t), {
@@ -200,9 +200,8 @@ async function createSession({ pin, params }) {
     }));
   }
 
-  // create round 1 config
   teamWrites.push(setDoc(roundDoc(sid, 1), {
-    instructorKey: newInstructorKey, // NEW: to satisfy rules
+    instructorKey: newInstructorKey,
     roundNumber: 1,
     visibility: params.round1Visibility,
     adEnabled: params.round1AdEnabled,
@@ -215,7 +214,6 @@ async function createSession({ pin, params }) {
 
   await Promise.all(teamWrites);
 
-  // store instructor key locally for this instructor browser
   localStorage.setItem(LS.instructorKey(sid), newInstructorKey);
   instructorKey = newInstructorKey;
 
@@ -226,8 +224,7 @@ async function createSession({ pin, params }) {
 // Instructor auth (PIN check)
 // =========================
 async function instructorAuth(sessionId, pin) {
-  const sref = sessionDoc(sessionId);
-  const s = await getDoc(sref);
+  const s = await getDoc(sessionDoc(sessionId));
   if (!s.exists()) throw new Error("Session not found");
   const want = s.data().instructor?.pinHash;
   const got = await sha256Hex(pin);
@@ -238,7 +235,6 @@ async function instructorAuth(sessionId, pin) {
   if (!instructorKey) {
     throw new Error("Instructor key not found on this device. Open/host the session on the device that created it.");
   }
-
   return true;
 }
 
@@ -250,7 +246,22 @@ async function getSessionIdFromJoinCode(code) {
 }
 
 // =========================
-// Student claim team
+// Student: reliable team restore
+// =========================
+async function restoreTeamFromPlayerDoc(sessionId) {
+  if (!uid) return false;
+  const p = await getDoc(playerDoc(sessionId, uid));
+  if (!p.exists()) return false;
+  const data = p.data();
+  if (!data || typeof data.teamNumber !== "number") return false;
+  teamNumber = data.teamNumber;
+  // Keep localStorage as best-effort cache
+  try { localStorage.setItem(LS.teamNumber(sessionId), String(teamNumber)); } catch {}
+  return true;
+}
+
+// =========================
+// Student claim team (writes players/{uid})
 // =========================
 async function claimTeam(sessionId, teamNum) {
   const tok = crypto.randomUUID();
@@ -259,43 +270,57 @@ async function claimTeam(sessionId, teamNum) {
   await runTransaction(db, async (tx) => {
     const sref = sessionDoc(sessionId);
     const tref = teamDoc(sessionId, teamNum);
-    const [sSnap, tSnap] = await Promise.all([tx.get(sref), tx.get(tref)]);
+    const pref = playerDoc(sessionId, uid);
+
+    const [sSnap, tSnap, pSnap] = await Promise.all([tx.get(sref), tx.get(tref), tx.get(pref)]);
 
     if (!sSnap.exists()) throw new Error("Session missing");
     const sdat = sSnap.data();
     if (sdat.joinLocked || sdat.status !== "lobby") throw new Error("Joining is locked");
 
+    if (pSnap.exists()) {
+      const pd = pSnap.data();
+      if (pd && typeof pd.teamNumber === "number") {
+        throw new Error(`This device already claimed Team ${pd.teamNumber}.`);
+      }
+      throw new Error("This device already claimed a team.");
+    }
+
     if (!tSnap.exists()) throw new Error("Team missing");
     const tdat = tSnap.data();
     if (tdat.claimed) throw new Error("Team already claimed");
 
-    // Enforce: one uid can claim only one team per session
-    for (let t = 1; t <= sdat.params.nTeams; t++) {
-      const otherRef = teamDoc(sessionId, t);
-      const otherSnap = await tx.get(otherRef);
-      if (otherSnap.exists()) {
-        const od = otherSnap.data();
-        if (od.claimed && od.claimedByUid === uid) {
-          throw new Error(`This device already claimed Team ${t}.`);
-        }
-      }
-    }
-
+    // Claim the team
     tx.update(tref, {
       claimed: true,
       claimedAt: serverTimestamp(),
       claimedByUid: uid,
       teamTokenHash: tokHash,
     });
+
+    // Create player mapping (for rejoin)
+    tx.set(pref, {
+      uid,
+      teamNumber: teamNum,
+      claimedAt: serverTimestamp(),
+    });
   });
 
-  localStorage.setItem(LS.teamToken(sessionId), tok);
-  localStorage.setItem(LS.teamNumber(sessionId), String(teamNum));
+  // best-effort local cache
+  try {
+    localStorage.setItem(LS.teamToken(sessionId), tok);
+    localStorage.setItem(LS.teamNumber(sessionId), String(teamNum));
+  } catch {}
   teamToken = tok;
   teamNumber = teamNum;
 }
 
 async function tryAutoRejoin(sessionId) {
+  // First try server-side mapping (most reliable)
+  const okServer = await restoreTeamFromPlayerDoc(sessionId);
+  if (okServer) return true;
+
+  // Fallback: local storage token check (older behavior)
   const tok = localStorage.getItem(LS.teamToken(sessionId));
   const tnum = localStorage.getItem(LS.teamNumber(sessionId));
   if (!tok || !tnum) return false;
@@ -323,7 +348,7 @@ async function releaseTeam(sessionId, teamNum) {
     const sdat = sSnap.data();
     if (sdat.currentRound > 0 || sdat.status !== "lobby") throw new Error("Cannot release after Round 1 starts");
     tx.update(tref, {
-      instructorKey,     // NEW: required by rules for instructor-only release
+      instructorKey,
       claimed: false,
       claimedAt: null,
       claimedByUid: null,
@@ -345,8 +370,7 @@ async function startRound(sessionId, roundNum) {
     if (sdat.status === "ended") throw new Error("Ended");
     if (!rSnap.exists()) throw new Error("Round config missing");
 
-    const nowMs = Date.now();
-    const endsMs = nowMs + (sdat.params.timerSec * 1000);
+    const endsMs = Date.now() + (sdat.params.timerSec * 1000);
 
     tx.update(sref, {
       instructorKey,
@@ -372,7 +396,6 @@ async function closeRound(sessionId, roundNum) {
 
   await updateDoc(roundDoc(sessionId, roundNum), { instructorKey, closedAt: serverTimestamp() });
 
-  // Ensure submissions exist (auto-assign max price, no ad)
   const subsSnap = await getDocs(submissionsCol(sessionId, roundNum));
   const have = new Set(subsSnap.docs.map(d => Number(d.id)));
   const writes = [];
@@ -419,7 +442,7 @@ async function endGameEarly(sessionId) {
 }
 
 // =========================
-// Computation
+// Computation (unchanged)
 // =========================
 function median(values) {
   if (!values.length) return null;
@@ -468,7 +491,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
     };
   });
 
-  // cumulative
   const cum = new Map();
   for (let r = 1; r < roundNum; r++) {
     const prevResSnap = await getDocs(resultsCol(sessionId, r));
@@ -480,7 +502,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
   }
   res.forEach(x => cum.set(x.teamNumber, (cum.get(x.teamNumber) || 0) + x.profitRound));
 
-  // ranks (round)
   const sortedRound = [...res].sort((a,b)=>b.profitRound-a.profitRound);
   const roundRank = new Map();
   let rank = 0;
@@ -492,7 +513,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
     prev = p;
   }
 
-  // ranks (cum)
   const sortedCum = [...res].map(x => ({ teamNumber: x.teamNumber, profitCum: cum.get(x.teamNumber) }))
     .sort((a,b)=>b.profitCum-a.profitCum);
   const cumRank = new Map();
@@ -504,7 +524,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
     prev = p;
   }
 
-  // aggregates
   const prices = res.map(x => x.price);
   const agg = {
     minPrice: Math.min(...prices),
@@ -513,7 +532,6 @@ async function computeAndStoreResults(sessionId, roundNum) {
     topProfitRound: Math.max(...res.map(x => x.profitRound)),
   };
 
-  // write results (instructor-only per rules)
   const writes = [];
   res.forEach(x => {
     writes.push(setDoc(resultDoc(sessionId, roundNum, x.teamNumber), {
@@ -539,7 +557,7 @@ async function computeAndStoreResults(sessionId, roundNum) {
 }
 
 // =========================
-// Student submission
+// Student submission (unchanged)
 // =========================
 async function submitTeam(sessionId, roundNum, teamNum, { price, ad }) {
   const [sSnap, rSnap] = await Promise.all([
@@ -575,7 +593,7 @@ async function submitTeam(sessionId, roundNum, teamNum, { price, ad }) {
 }
 
 // =========================
-// Export
+// Export (unchanged)
 // =========================
 async function exportCSV(sessionId) {
   if (!instructorAuthed) throw new Error("Not authed");
@@ -626,7 +644,7 @@ async function exportCSV(sessionId) {
 }
 
 // =========================
-// Rendering
+// Rendering helpers (unchanged)
 // =========================
 function renderTeamButtons(listEl, nTeams, claimedMap, { disabledAll=false, onClick=null, showRelease=false }) {
   listEl.innerHTML = "";
@@ -750,7 +768,6 @@ async function subscribeSession(sessionId) {
 
     if (role === "instructor") {
       if (!instructorAuthed) return;
-
       if (sdat.status === "lobby") await renderInstructorLobby(sdat);
       else if (sdat.status === "round_active") await renderInstructorRound(sdat);
       else if (sdat.status === "between") await renderInstructorBetween(sdat);
@@ -758,7 +775,16 @@ async function subscribeSession(sessionId) {
     }
 
     if (role === "student") {
-      if (!teamNumber) { await renderStudentClaim(sdat); return; }
+      // NEW: if teamNumber missing, try to restore from server mapping
+      if (!teamNumber) {
+        await restoreTeamFromPlayerDoc(activeSessionId);
+      }
+
+      if (!teamNumber) {
+        await renderStudentClaim(sdat);
+        return;
+      }
+
       if (sdat.status === "lobby") await renderStudentLobby(sdat);
       else if (sdat.status === "round_active") await renderStudentRound(sdat);
       else if (sdat.status === "between") await renderStudentResults(sdat);
@@ -784,7 +810,6 @@ async function renderInstructorLobby(sdat) {
   });
   void(qr);
 
-  // teams (realtime)
   const nTeams = sdat.params.nTeams;
   teamsUnsub?.();
   teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
@@ -880,7 +905,6 @@ async function renderStudentClaim(sdat) {
   const joinLocked = sdat.joinLocked || sdat.status !== "lobby";
   $("joinLockedNotice").hidden = !joinLocked;
 
-  // teams (realtime)
   teamsUnsub?.();
   teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
     const claimedMap = new Map();
@@ -929,7 +953,7 @@ async function renderStudentRound(sdat) {
     $("adDetails").textContent = `Fee $${rdat.adFee}. Weight multiplier ×${rdat.adMult}.`;
   } else {
     $("adBlock").hidden = true;
-    $("adOffNotice").hidden = true; // hide entirely per requirement
+    $("adOffNotice").hidden = true;
   }
 
   const subSnap = await getDoc(submissionDoc(activeSessionId, r, teamNumber));
@@ -1025,21 +1049,17 @@ function wireUI() {
     setHashRoute("home");
   });
 
-  // home
   $("btnStudent").addEventListener("click", () => setHashRoute("student"));
   $("btnInstructor").addEventListener("click", () => setHashRoute("instructor"));
 
-  // student
   $("btnStudentBack").addEventListener("click", ()=> setHashRoute("home"));
   $("btnStudentJoin").addEventListener("click", async ()=> {
-    // If student arrived via QR, the URL contains sid=...
     const { params } = parseHash();
     const sidFromUrl = params.get("sid");
 
     let sid = sidFromUrl;
     let code = null;
 
-    // Fallback: if no sid in URL, use typed join code
     if (!sid) {
       code = $("studentJoinCode").value.trim().toUpperCase();
       if (!code) return;
@@ -1061,11 +1081,12 @@ function wireUI() {
     joinCode = code;
 
     await subscribeSession(sid);
+
+    // Attempt rejoin immediately
     await tryAutoRejoin(sid);
   });
   $("btnStudentLeave").addEventListener("click", ()=> setHashRoute("home"));
 
-  // student submit
   $("btnSubmit").addEventListener("click", async ()=> {
     const sdat = lastSessionDoc;
     if (!sdat || sdat.status !== "round_active") return;
@@ -1102,7 +1123,6 @@ function wireUI() {
     dlg.addEventListener("close", onClose);
   });
 
-  // instructor
   $("btnInstructorBack").addEventListener("click", ()=> setHashRoute("home"));
   $("btnCreateSession").addEventListener("click", ()=> setHashRoute("create"));
 
@@ -1122,7 +1142,6 @@ function wireUI() {
     }
   });
 
-  // create session
   $("btnCreateConfirm").addEventListener("click", async ()=> {
     const pin = $("createPIN").value.trim();
     if (!pin) { $("createHelp").textContent = "PIN required."; return; }
@@ -1154,13 +1173,11 @@ function wireUI() {
   });
   $("btnCreateCancel").addEventListener("click", ()=> setHashRoute("instructor"));
 
-  // instructor lobby
   $("btnStartRound1").addEventListener("click", async ()=> {
     try { await startRound(activeSessionId, 1); }
     catch (err) { alert(err.message || String(err)); }
   });
 
-  // instructor round
   $("btnCloseEarly").addEventListener("click", async ()=> {
     try {
       const r = lastSessionDoc.currentRound;
@@ -1168,7 +1185,6 @@ function wireUI() {
     } catch (err) { alert(err.message || String(err)); }
   });
 
-  // between rounds
   $("nextAdEnabled").addEventListener("change", ()=> {
     $("nextAdFields").hidden = !$("nextAdEnabled").checked;
   });
