@@ -1114,9 +1114,16 @@ function wireUI() {
       dlg.removeEventListener("close", onClose);
       if (dlg.returnValue !== "confirm") return;
       try {
+        $("btnSubmit").disabled = true; // prevent double submit spam
         const out = await submitTeam(activeSessionId, r, teamNumber, { price: p, ad });
-        $("submittedSummary").textContent = `Submitted: $${fmtPrice1(out.price)} • Advertising: ${out.ad ? "Yes" : "No"}`;
+
+        // Immediately transition to the locked screen
+        await renderStudentSubmitted(lastSessionDoc);
+
+        // And show what they submitted (renderStudentSubmitted reads from Firestore,
+        // so it will reflect the saved submission)
       } catch (err) {
+        $("btnSubmit").disabled = false;
         alert(err.message || String(err));
       }
     };
