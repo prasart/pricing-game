@@ -87,14 +87,17 @@ let uid = null;
 let role = ""; // student|instructor
 let activeSessionId = null;
 let joinCode = null;
+
 let teamNumber = null;
 let teamToken = null;
+
 let instructorAuthed = false;
+let instructorKey = null; // NEW: stored in localStorage for instructor writes
 
 let sessionUnsub = null;
 let teamUnsub = null;
 let submissionsUnsub = null;
-let teamsUnsub = null; // NEW: live team list updates
+let teamsUnsub = null;
 
 let lastSessionDoc = null;
 
@@ -102,6 +105,7 @@ let lastSessionDoc = null;
 const LS = {
   teamToken: (sessionId) => `pg_teamToken_${sessionId}`,
   teamNumber: (sessionId) => `pg_teamNumber_${sessionId}`,
+  instructorKey: (sessionId) => `pg_instructorKey_${sessionId}`,
 };
 
 function cleanupSubs() {
@@ -143,6 +147,9 @@ const resultDoc = (sessionId, roundNum, teamNum) => doc(db, "sessions", sessionI
 async function createSession({ pin, params }) {
   const pinHash = await sha256Hex(pin);
 
+  // NEW: instructorKey used for instructor-only writes (rules-only gate)
+  const newInstructorKey = crypto.randomUUID();
+
   // attempt unique join code
   let code = randomJoinCode();
   for (let tries = 0; tries < 5; tries++) {
@@ -162,6 +169,7 @@ async function createSession({ pin, params }) {
     status: "lobby", // lobby|round_active|between|ended
     joinLocked: false,
     currentRound: 0,
+    instructorKey: newInstructorKey, // NEW
     params: {
       nTeams: params.nTeams,
       rounds: params.rounds,
@@ -194,6 +202,7 @@ async function createSession({ pin, params }) {
 
   // create round 1 config
   teamWrites.push(setDoc(roundDoc(sid, 1), {
+    instructorKey: newInstructorKey, // NEW: to satisfy rules
     roundNumber: 1,
     visibility: params.round1Visibility,
     adEnabled: params.round1AdEnabled,
@@ -205,6 +214,10 @@ async function createSession({ pin, params }) {
   }));
 
   await Promise.all(teamWrites);
+
+  // store instructor key locally for this instructor browser
+  localStorage.setItem(LS.instructorKey(sid), newInstructorKey);
+  instructorKey = newInstructorKey;
 
   return { sessionId: sid, joinCode: code };
 }
@@ -220,6 +233,12 @@ async function instructorAuth(sessionId, pin) {
   const got = await sha256Hex(pin);
   if (!want || want !== got) throw new Error("Incorrect PIN");
   instructorAuthed = true;
+
+  instructorKey = localStorage.getItem(LS.instructorKey(sessionId));
+  if (!instructorKey) {
+    throw new Error("Instructor key not found on this device. Open/host the session on the device that created it.");
+  }
+
   return true;
 }
 
@@ -250,7 +269,7 @@ async function claimTeam(sessionId, teamNum) {
     const tdat = tSnap.data();
     if (tdat.claimed) throw new Error("Team already claimed");
 
-    // NEW: enforce one team per device/user (anonymous uid) per session
+    // Enforce: one uid can claim only one team per session
     for (let t = 1; t <= sdat.params.nTeams; t++) {
       const otherRef = teamDoc(sessionId, t);
       const otherSnap = await tx.get(otherRef);
@@ -329,12 +348,14 @@ async function startRound(sessionId, roundNum) {
     const endsMs = nowMs + (sdat.params.timerSec * 1000);
 
     tx.update(sref, {
+      instructorKey,
       status: "round_active",
       joinLocked: true,
       currentRound: roundNum,
     });
 
     tx.update(rref, {
+      instructorKey,
       startedAt: serverTimestamp(),
       endsAt: new Date(endsMs),
       closedAt: null,
@@ -348,7 +369,7 @@ async function closeRound(sessionId, roundNum) {
   if (!sSnap.exists()) throw new Error("Session missing");
   const sdat = sSnap.data();
 
-  await updateDoc(roundDoc(sessionId, roundNum), { closedAt: serverTimestamp() });
+  await updateDoc(roundDoc(sessionId, roundNum), { instructorKey, closedAt: serverTimestamp() });
 
   // Ensure submissions exist (auto-assign max price, no ad)
   const subsSnap = await getDocs(submissionsCol(sessionId, roundNum));
@@ -370,15 +391,16 @@ async function closeRound(sessionId, roundNum) {
   await computeAndStoreResults(sessionId, roundNum);
 
   if (roundNum >= sdat.params.rounds) {
-    await updateDoc(sessionDoc(sessionId), { status: "ended" });
+    await updateDoc(sessionDoc(sessionId), { instructorKey, status: "ended" });
   } else {
-    await updateDoc(sessionDoc(sessionId), { status: "between" });
+    await updateDoc(sessionDoc(sessionId), { instructorKey, status: "between" });
   }
 }
 
 async function setNextRoundConfig(sessionId, nextRoundNum, cfg) {
   if (!instructorAuthed) throw new Error("Not authed");
   await setDoc(roundDoc(sessionId, nextRoundNum), {
+    instructorKey,
     roundNumber: nextRoundNum,
     visibility: cfg.visibility,
     adEnabled: cfg.adEnabled,
@@ -392,7 +414,7 @@ async function setNextRoundConfig(sessionId, nextRoundNum, cfg) {
 
 async function endGameEarly(sessionId) {
   if (!instructorAuthed) throw new Error("Not authed");
-  await updateDoc(sessionDoc(sessionId), { status: "ended" });
+  await updateDoc(sessionDoc(sessionId), { instructorKey, status: "ended" });
 }
 
 // =========================
@@ -402,7 +424,7 @@ function median(values) {
   if (!values.length) return null;
   const a = [...values].sort((x,y)=>x-y);
   const mid = Math.floor(a.length/2);
-  return a.length % 2 ? a[mid] : (a[mid-1] + a[mid])/2;
+  return a.length % 2 ? a[mid] : (a[mid-1] + a[mid]) / 2;
 }
 
 async function computeAndStoreResults(sessionId, roundNum) {
@@ -426,10 +448,9 @@ async function computeAndStoreResults(sessionId, roundNum) {
   const weights = submissions.map(s => {
     const p = Number(s.price);
     const base = 1 / Math.pow(p, Number(params.k));
-    const w = adEnabled && s.ad ? base * mult : base;
-    return w;
+    return (adEnabled && s.ad) ? base * mult : base;
   });
-  const wsum = weights.reduce((a,b)=>a+b,0);
+  const wsum = weights.reduce((a,b)=>a+b, 0);
 
   const res = submissions.map((s, idx) => {
     const share = wsum > 0 ? (weights[idx] / wsum) : (1 / params.nTeams);
@@ -484,21 +505,18 @@ async function computeAndStoreResults(sessionId, roundNum) {
 
   // aggregates
   const prices = res.map(x => x.price);
-  const minP = Math.min(...prices);
-  const maxP = Math.max(...prices);
-  const medP = median(prices);
-  const topProfit = Math.max(...res.map(x => x.profitRound));
-
   const agg = {
-    minPrice: minP,
-    maxPrice: maxP,
-    medianPrice: medP,
-    topProfitRound: topProfit,
+    minPrice: Math.min(...prices),
+    maxPrice: Math.max(...prices),
+    medianPrice: median(prices),
+    topProfitRound: Math.max(...res.map(x => x.profitRound)),
   };
 
+  // write results (instructor-only per rules)
   const writes = [];
   res.forEach(x => {
     writes.push(setDoc(resultDoc(sessionId, roundNum, x.teamNumber), {
+      instructorKey,
       teamNumber: x.teamNumber,
       price: x.price,
       ad: x.ad,
@@ -523,7 +541,10 @@ async function computeAndStoreResults(sessionId, roundNum) {
 // Student submission
 // =========================
 async function submitTeam(sessionId, roundNum, teamNum, { price, ad }) {
-  const [sSnap, rSnap] = await Promise.all([getDoc(sessionDoc(sessionId)), getDoc(roundDoc(sessionId, roundNum))]);
+  const [sSnap, rSnap] = await Promise.all([
+    getDoc(sessionDoc(sessionId)),
+    getDoc(roundDoc(sessionId, roundNum))
+  ]);
   const sdat = sSnap.data();
   const rdat = rSnap.data();
 
@@ -539,6 +560,7 @@ async function submitTeam(sessionId, roundNum, teamNum, { price, ad }) {
     const sdat2 = ss.data();
     if (sdat2.status !== "round_active" || sdat2.currentRound !== roundNum) throw new Error("Round not active");
     if (sub.exists()) return;
+
     tx.set(subref, {
       teamNumber: teamNum,
       price: p,
@@ -561,10 +583,9 @@ async function exportCSV(sessionId) {
   const R = sdat.currentRound;
 
   const rows = [];
-  const header = [
+  rows.push([
     "session_id","round_number","team_number","submission_type","price","advertising","market_share","profit_round","profit_cumulative","rank_round","rank_cumulative"
-  ];
-  rows.push(header);
+  ]);
 
   for (let r = 1; r <= R; r++) {
     const rs = await getDocs(resultsCol(sessionId, r));
@@ -618,9 +639,7 @@ function renderTeamButtons(listEl, nTeams, claimedMap, { disabledAll=false, onCl
     btn.setAttribute("aria-disabled", disabled ? "true" : "false");
     btn.innerHTML = `<div class="t">Team ${t}</div><div class="s">${claimed ? "Claimed" : "Available"}</div>`;
 
-    if (!disabled && onClick) {
-      btn.addEventListener("click", () => onClick(t));
-    }
+    if (!disabled && onClick) btn.addEventListener("click", () => onClick(t));
 
     if (showRelease && claimed) {
       const rel = document.createElement("button");
@@ -629,11 +648,8 @@ function renderTeamButtons(listEl, nTeams, claimedMap, { disabledAll=false, onCl
       rel.textContent = "Release";
       rel.addEventListener("click", async (e) => {
         e.stopPropagation();
-        try {
-          await releaseTeam(activeSessionId, t);
-        } catch (err) {
-          alert(err.message || String(err));
-        }
+        try { await releaseTeam(activeSessionId, t); }
+        catch (err) { alert(err.message || String(err)); }
       });
       btn.appendChild(rel);
     }
@@ -661,7 +677,7 @@ function renderResultsTable(tableEl, rows, { showAd }) {
     { key:"teamNumber", label:"Team" },
     { key:"price", label:"Price", fmt:(x)=>`$${fmtPrice1(x)}` },
   ];
-  if (showAd) cols.push({ key:"ad", label:"Ad?", fmt:(x)=>x?"Yes":"No" });
+  if (showAd) cols.push({ key:"ad", label:"Ad?", fmt:(x)=>x ? "Yes" : "No" });
   cols.push(
     { key:"share", label:"Share", fmt:(x)=>fmtPct2(x) },
     { key:"profitRound", label:"Profit (round)", fmt:(x)=>fmtMoney0(x) },
@@ -715,11 +731,7 @@ function startTimerLoop(endsAt) {
     const left = computeTimeLeftMs(endsAt);
     if (left === null) return;
     $("timerBig").textContent = formatMMSS(left);
-    if (left <= 0) {
-      $("timerNote").textContent = "Time is up. Close the round if it doesn't auto-close.";
-    } else {
-      $("timerNote").textContent = "";
-    }
+    $("timerNote").textContent = left <= 0 ? "Time is up. Close the round if it doesn't auto-close." : "";
   }, 200);
 }
 
@@ -738,31 +750,18 @@ async function subscribeSession(sessionId) {
     if (role === "instructor") {
       if (!instructorAuthed) return;
 
-      if (sdat.status === "lobby") {
-        await renderInstructorLobby(sdat);
-      } else if (sdat.status === "round_active") {
-        await renderInstructorRound(sdat);
-      } else if (sdat.status === "between") {
-        await renderInstructorBetween(sdat);
-      } else if (sdat.status === "ended") {
-        await renderInstructorFinal(sdat);
-      }
+      if (sdat.status === "lobby") await renderInstructorLobby(sdat);
+      else if (sdat.status === "round_active") await renderInstructorRound(sdat);
+      else if (sdat.status === "between") await renderInstructorBetween(sdat);
+      else if (sdat.status === "ended") await renderInstructorFinal(sdat);
     }
 
     if (role === "student") {
-      if (!teamNumber) {
-        await renderStudentClaim(sdat);
-        return;
-      }
-      if (sdat.status === "lobby") {
-        await renderStudentLobby(sdat);
-      } else if (sdat.status === "round_active") {
-        await renderStudentRound(sdat);
-      } else if (sdat.status === "between") {
-        await renderStudentResults(sdat);
-      } else if (sdat.status === "ended") {
-        await renderStudentFinal(sdat);
-      }
+      if (!teamNumber) { await renderStudentClaim(sdat); return; }
+      if (sdat.status === "lobby") await renderStudentLobby(sdat);
+      else if (sdat.status === "round_active") await renderStudentRound(sdat);
+      else if (sdat.status === "between") await renderStudentResults(sdat);
+      else if (sdat.status === "ended") await renderStudentFinal(sdat);
     }
   });
 }
@@ -786,17 +785,13 @@ async function renderInstructorLobby(sdat) {
 
   // teams (realtime)
   const nTeams = sdat.params.nTeams;
-
   teamsUnsub?.();
   teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
-    console.log("Instructor lobby teams snapshot:", tSnap.size);
-    
     const claimedMap = new Map();
     tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
     const claimedCount = [...claimedMap.values()].filter(Boolean).length;
-    
     $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
-    renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });   
+    renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });
   });
 }
 
@@ -807,6 +802,7 @@ async function renderInstructorRound(sdat) {
   const r = sdat.currentRound;
   const rSnap = await getDoc(roundDoc(activeSessionId, r));
   const rdat = rSnap.data();
+
   $("instructorRoundHeader").textContent =
     `Round ${r} of ${sdat.params.rounds} • Visibility: ${rdat.visibility === "full" ? "Full" : "Private"} • Advertising: ${rdat.adEnabled ? `ON (fee $${rdat.adFee}, ×${rdat.adMult})` : "OFF"}`;
 
@@ -863,14 +859,12 @@ async function renderInstructorFinal(sdat) {
   show("screenInstructorFinal");
 
   $("finalHeader").textContent = `Completed rounds: ${sdat.currentRound} of ${sdat.params.rounds}`;
-
   const R = sdat.currentRound;
   if (R === 0) {
     $("instructorFinalTable").innerHTML = "";
     $("finalHelp").textContent = "No rounds were completed.";
     return;
   }
-
   const rs = await getDocs(resultsCol(activeSessionId, R));
   const rows = rs.docs.map(d => d.data()).sort((a,b)=>a.rankCum-b.rankCum || a.teamNumber-b.teamNumber);
   renderResultsTable($("instructorFinalTable"), rows, { showAd: false });
@@ -885,7 +879,7 @@ async function renderStudentClaim(sdat) {
   const joinLocked = sdat.joinLocked || sdat.status !== "lobby";
   $("joinLockedNotice").hidden = !joinLocked;
 
-  // NEW: live team claims listener so buttons update immediately
+  // teams (realtime)
   teamsUnsub?.();
   teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
     const claimedMap = new Map();
@@ -925,7 +919,8 @@ async function renderStudentRound(sdat) {
   else header.push("Advertising OFF");
   $("studentRoundHeader").textContent = header.join(" • ");
 
-  $("priceBoundsLabel").textContent = `Allowed: $${fmtPrice1(sdat.params.pMin)} to $${fmtPrice1(sdat.params.pMax)} (step ${sdat.params.pStep})`;
+  $("priceBoundsLabel").textContent =
+    `Allowed: $${fmtPrice1(sdat.params.pMin)} to $${fmtPrice1(sdat.params.pMax)} (step ${sdat.params.pStep})`;
 
   if (rdat.adEnabled) {
     $("adBlock").hidden = false;
@@ -933,7 +928,7 @@ async function renderStudentRound(sdat) {
     $("adDetails").textContent = `Fee $${rdat.adFee}. Weight multiplier ×${rdat.adMult}.`;
   } else {
     $("adBlock").hidden = true;
-    $("adOffNotice").hidden = true;
+    $("adOffNotice").hidden = true; // hide entirely per requirement
   }
 
   const subSnap = await getDoc(submissionDoc(activeSessionId, r, teamNumber));
@@ -943,7 +938,6 @@ async function renderStudentRound(sdat) {
   }
 
   if (!$("priceInput").value) $("priceInput").value = fmtPrice1(sdat.params.pMin);
-
   $("submitHelp").textContent = "Submit once. You will be asked to confirm.";
 }
 
@@ -955,8 +949,7 @@ async function renderStudentSubmitted(sdat) {
   const r = sdat.currentRound;
   const subSnap = await getDoc(submissionDoc(activeSessionId, r, teamNumber));
   const sub = subSnap.data();
-  const adStr = sub.ad ? "Yes" : "No";
-  $("submittedSummary").textContent = `Submitted: $${fmtPrice1(sub.price)} • Advertising: ${adStr}`;
+  $("submittedSummary").textContent = `Submitted: $${fmtPrice1(sub.price)} • Advertising: ${sub.ad ? "Yes" : "No"}`;
 }
 
 async function renderStudentResults(sdat) {
@@ -1025,6 +1018,7 @@ function wireUI() {
     cleanupSubs();
     role = "";
     instructorAuthed = false;
+    instructorKey = null;
     teamNumber = null;
     activeSessionId = null;
     setHashRoute("home");
@@ -1047,6 +1041,43 @@ function wireUI() {
     await tryAutoRejoin(sid);
   });
   $("btnStudentLeave").addEventListener("click", ()=> setHashRoute("home"));
+
+  // student submit
+  $("btnSubmit").addEventListener("click", async ()=> {
+    const sdat = lastSessionDoc;
+    if (!sdat || sdat.status !== "round_active") return;
+    const r = sdat.currentRound;
+    const rSnap = await getDoc(roundDoc(activeSessionId, r));
+    const rdat = rSnap.data();
+
+    const rawPrice = Number($("priceInput").value);
+    if (!Number.isFinite(rawPrice)) { alert("Enter a valid price"); return; }
+
+    const p = clampStep(rawPrice, sdat.params.pMin, sdat.params.pMax, sdat.params.pStep);
+    const ad = rdat.adEnabled ? $("adToggle").checked : false;
+
+    const sum = {
+      "Team": `Team ${teamNumber}`,
+      "Price": `$${fmtPrice1(p)}`,
+      ...(rdat.adEnabled ? { "Advertising": ad ? "Yes" : "No" } : {}),
+    };
+    renderKV($("confirmSummary"), sum);
+
+    const dlg = $("confirmSubmitDialog");
+    dlg.showModal();
+
+    const onClose = async () => {
+      dlg.removeEventListener("close", onClose);
+      if (dlg.returnValue !== "confirm") return;
+      try {
+        const out = await submitTeam(activeSessionId, r, teamNumber, { price: p, ad });
+        $("submittedSummary").textContent = `Submitted: $${fmtPrice1(out.price)} • Advertising: ${out.ad ? "Yes" : "No"}`;
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    };
+    dlg.addEventListener("close", onClose);
+  });
 
   // instructor
   $("btnInstructorBack").addEventListener("click", ()=> setHashRoute("home"));
@@ -1102,9 +1133,8 @@ function wireUI() {
 
   // instructor lobby
   $("btnStartRound1").addEventListener("click", async ()=> {
-    try {
-      await startRound(activeSessionId, 1);
-    } catch (err) { alert(err.message || String(err)); }
+    try { await startRound(activeSessionId, 1); }
+    catch (err) { alert(err.message || String(err)); }
   });
 
   // instructor round
@@ -1140,9 +1170,8 @@ function wireUI() {
     $("confirmEndDialog").showModal();
   });
   $("confirmEndBtn").addEventListener("click", async ()=> {
-    try {
-      await endGameEarly(activeSessionId);
-    } catch (err) { alert(err.message || String(err)); }
+    try { await endGameEarly(activeSessionId); }
+    catch (err) { alert(err.message || String(err)); }
   });
 
   $("btnExport").addEventListener("click", async ()=> {
@@ -1161,43 +1190,6 @@ function wireUI() {
 
   $("btnResetReplay").addEventListener("click", ()=> {
     setHashRoute("create");
-  });
-
-  // student submit (same as before)
-  $("btnSubmit").addEventListener("click", async ()=> {
-    const sdat = lastSessionDoc;
-    if (!sdat || sdat.status !== "round_active") return;
-    const r = sdat.currentRound;
-    const rSnap = await getDoc(roundDoc(activeSessionId, r));
-    const rdat = rSnap.data();
-
-    const rawPrice = Number($("priceInput").value);
-    if (!Number.isFinite(rawPrice)) { alert("Enter a valid price"); return; }
-
-    const p = clampStep(rawPrice, sdat.params.pMin, sdat.params.pMax, sdat.params.pStep);
-    const ad = rdat.adEnabled ? $("adToggle").checked : false;
-
-    const sum = {
-      "Team": `Team ${teamNumber}`,
-      "Price": `$${fmtPrice1(p)}`,
-      ...(rdat.adEnabled ? { "Advertising": ad ? "Yes" : "No" } : {}),
-    };
-    renderKV($("confirmSummary"), sum);
-
-    const dlg = $("confirmSubmitDialog");
-    dlg.showModal();
-
-    const onClose = async () => {
-      dlg.removeEventListener("close", onClose);
-      if (dlg.returnValue !== "confirm") return;
-      try {
-        const out = await submitTeam(activeSessionId, r, teamNumber, { price: p, ad });
-        $("submittedSummary").textContent = `Submitted: $${fmtPrice1(out.price)} • Advertising: ${out.ad ? "Yes" : "No"}`;
-      } catch (err) {
-        alert(err.message || String(err));
-      }
-    };
-    dlg.addEventListener("close", onClose);
   });
 }
 
@@ -1274,6 +1266,7 @@ async function boot() {
     teamToken = null;
     activeSessionId = null;
     instructorAuthed = false;
+    instructorKey = null;
     await handleRoute();
   });
 }
