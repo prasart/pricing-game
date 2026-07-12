@@ -772,7 +772,7 @@ async function renderInstructorLobby(sdat) {
   show("screenInstructorLobby");
 
   $("joinCodeBig").textContent = sdat.joinCode;
-  const joinUrl = `${location.origin}${location.pathname}#student?code=${encodeURIComponent(sdat.joinCode)}`;
+  const joinUrl = `${location.origin}${location.pathname}#student?sid=${encodeURIComponent(activeSessionId)}`;
   $("joinUrl").textContent = joinUrl;
 
   const qr = new QRious({
@@ -1032,12 +1032,34 @@ function wireUI() {
   // student
   $("btnStudentBack").addEventListener("click", ()=> setHashRoute("home"));
   $("btnStudentJoin").addEventListener("click", async ()=> {
-    const code = $("studentJoinCode").value.trim().toUpperCase();
-    if (!code) return;
-    const sid = await getSessionIdFromJoinCode(code);
-    if (!sid) { alert("Join code not found"); return; }
+    // If student arrived via QR, the URL contains sid=...
+    const { params } = parseHash();
+    const sidFromUrl = params.get("sid");
+
+    let sid = sidFromUrl;
+    let code = null;
+
+    // Fallback: if no sid in URL, use typed join code
+    if (!sid) {
+      code = $("studentJoinCode").value.trim().toUpperCase();
+      if (!code) return;
+
+      try {
+        sid = await getSessionIdFromJoinCode(code);
+      } catch (err) {
+        alert("Could not contact the database. Check connection and try again.");
+        return;
+      }
+
+      if (!sid) {
+        alert("Join code not found");
+        return;
+      }
+    }
+
     role = "student";
     joinCode = code;
+
     await subscribeSession(sid);
     await tryAutoRejoin(sid);
   });
