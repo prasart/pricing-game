@@ -323,6 +323,7 @@ async function releaseTeam(sessionId, teamNum) {
     const sdat = sSnap.data();
     if (sdat.currentRound > 0 || sdat.status !== "lobby") throw new Error("Cannot release after Round 1 starts");
     tx.update(tref, {
+      instructorKey,     // NEW: required by rules for instructor-only release
       claimed: false,
       claimedAt: null,
       claimedByUid: null,
