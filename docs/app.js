@@ -962,6 +962,8 @@ async function renderStudentRound(sdat) {
     return;
   }
 
+  $("btnSubmit").disabled = false;
+
   if (!$("priceInput").value) $("priceInput").value = fmtPrice1(sdat.params.pMin);
   $("submitHelp").textContent = "Submit once. You will be asked to confirm.";
 }
