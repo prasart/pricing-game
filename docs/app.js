@@ -1175,7 +1175,6 @@ function wireUI() {
       role = "instructor";
       joinCode = out.joinCode;
       await subscribeSession(out.sessionId);
-      setHashRoute("instructor", { code: out.joinCode });
     } catch (err) {
       $("createHelp").textContent = err.message || String(err);
     }
