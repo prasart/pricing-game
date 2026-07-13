@@ -313,6 +313,7 @@ async function claimTeam(sessionId, teamNum) {
   } catch {}
   teamToken = tok;
   teamNumber = teamNum;
+  updateTopbarSessionPill();
 }
 
 async function tryAutoRejoin(sessionId) {
@@ -754,6 +755,28 @@ function startTimerLoop(endsAt) {
   }, 200);
 }
 
+function updateTopbarSessionPill() {
+  const pill = $("topbarSessionPill");
+  if (!pill) return;
+
+  const code = lastSessionDoc?.joinCode;
+
+  if (role === "instructor" && code) {
+    pill.hidden = false;
+    pill.textContent = `Code: ${code}`;
+    return;
+  }
+
+  if (role === "student" && code && teamNumber) {
+    pill.hidden = false;
+    pill.textContent = `Code: ${code} • Team ${teamNumber}`;
+    return;
+  }
+
+  pill.hidden = true;
+  pill.textContent = "";
+}
+
 // =========================
 // Subscriptions / route handling
 // =========================
@@ -765,6 +788,7 @@ async function subscribeSession(sessionId) {
     if (!snap.exists()) return;
     lastSessionDoc = snap.data();
     const sdat = lastSessionDoc;
+    updateTopbarSessionPill();
 
     if (role === "instructor") {
       if (!instructorAuthed) return;
