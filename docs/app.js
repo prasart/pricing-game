@@ -1175,6 +1175,7 @@ function wireUI() {
       role = "instructor";
       joinCode = out.joinCode;
       await subscribeSession(out.sessionId);
+      setHashRoute("host", { sid: out.sessionId });
     } catch (err) {
       $("createHelp").textContent = err.message || String(err);
     }
@@ -1286,6 +1287,19 @@ async function handleRoute() {
     initCreateDefaults();
     return;
   }
+  if (route === "host") {
+    role = "instructor";
+    instructorAuthed = true;
+
+    const sid = params.get("sid");
+    if (!sid) {
+      show("screenInstructorPIN");
+      return;
+    }
+
+    await subscribeSession(sid);
+    return;
+  }
 
   show("screenHome");
 }
@@ -1312,8 +1326,13 @@ async function boot() {
     teamNumber = null;
     teamToken = null;
     activeSessionId = null;
-    instructorAuthed = false;
-    instructorKey = null;
+    
+    const { route } = parseHash();
+    if (route !== "host") {
+      instructorAuthed = false;
+      instructorKey = null;
+    }
+
     await handleRoute();
   });
 }
