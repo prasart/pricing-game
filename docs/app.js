@@ -817,7 +817,7 @@ async function renderInstructorLobby(sdat) {
     tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
     const claimedCount = [...claimedMap.values()].filter(Boolean).length;
     $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
-    renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: true });
+    renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: false });
   });
 }
 
@@ -1171,12 +1171,11 @@ function wireUI() {
 
     try {
       const out = await createSession({ pin, params });
-      instructorAuthed = true;                 // you just created it, so allow immediately
+      instructorAuthed = true;                 // immediately allow instructor controls
       role = "instructor";
       joinCode = out.joinCode;
       await subscribeSession(out.sessionId);
       setHashRoute("instructor", { code: out.joinCode });
-      const out = await createSession({ pin, params });
     } catch (err) {
       $("createHelp").textContent = err.message || String(err);
     }
