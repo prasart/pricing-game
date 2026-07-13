@@ -798,12 +798,13 @@ async function renderInstructorLobby(sdat) {
   show("screenInstructorLobby");
 
   $("joinCodeBig").textContent = sdat.joinCode;
-  const joinUrl = `${location.origin}${location.pathname}#student?sid=${encodeURIComponent(activeSessionId)}`;
-  $("joinUrl").textContent = joinUrl;
-
+  const joinUrlQR = `${location.origin}${location.pathname}#student?sid=${encodeURIComponent(activeSessionId)}`;
+  const joinUrlTyped = `${location.origin}${location.pathname}#student?code=${encodeURIComponent(sdat.joinCode)}`;
+  $("joinUrl").textContent = joinUrlTyped;   // show the easy-to-type link
+  
   const qr = new QRious({
     element: $("qrCanvas"),
-    value: joinUrl,
+    value: joinUrlQR,
     size: 256,
     background: "white",
     foreground: "black",
