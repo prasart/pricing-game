@@ -822,10 +822,14 @@ async function renderInstructorLobby(sdat) {
   show("screenInstructorLobby");
 
   $("joinCodeBig").textContent = sdat.joinCode;
-  const joinUrlQR = `${location.origin}${location.pathname}#student?sid=${encodeURIComponent(activeSessionId)}`;
-  const joinUrlTyped = `${location.origin}${location.pathname}#student?code=${encodeURIComponent(sdat.joinCode)}`;
-  $("joinUrl").textContent = joinUrlTyped;   // show the easy-to-type link
-  
+
+  // Show an easy-to-type base URL (no code in it)
+  const baseUrl = `${location.origin}${location.pathname}`;
+  $("joinUrl").textContent = baseUrl;
+
+  // QR should auto-fill the join code for phone users
+  const joinUrlQR = `${baseUrl}#student?code=${encodeURIComponent(sdat.joinCode)}`;
+
   const qr = new QRious({
     element: $("qrCanvas"),
     value: joinUrlQR,
@@ -835,20 +839,29 @@ async function renderInstructorLobby(sdat) {
   });
   void(qr);
 
+  // Force-update the top bar pill right away
+  updateTopbarSessionPill();
+
   const nTeams = sdat.params.nTeams;
   teamsUnsub?.();
   teamsUnsub = onSnapshot(teamsCol(activeSessionId), (tSnap) => {
     const claimedMap = new Map();
     tSnap.forEach(d => claimedMap.set(Number(d.id), !!d.data().claimed));
     const claimedCount = [...claimedMap.values()].filter(Boolean).length;
+
     $("lobbyStatus").textContent = `${claimedCount}/${nTeams} teams claimed.`;
     renderTeamButtons($("instructorTeamList"), nTeams, claimedMap, { showRelease: false });
+
+    // Keep the top bar pill visible/updated
+    updateTopbarSessionPill();
   });
 }
 
 async function renderInstructorRound(sdat) {
   hideAllScreens();
   show("screenInstructorRound");
+
+  updateTopbarSessionPill(); // NEW
 
   const r = sdat.currentRound;
   const rSnap = await getDoc(roundDoc(activeSessionId, r));
@@ -885,6 +898,8 @@ async function renderInstructorBetween(sdat) {
   hideAllScreens();
   show("screenInstructorBetween");
 
+  updateTopbarSessionPill(); // NEW
+
   const r = sdat.currentRound;
   $("betweenHeader").textContent = `Round ${r} complete • Configure Round ${r+1}`;
 
@@ -908,6 +923,8 @@ async function renderInstructorBetween(sdat) {
 async function renderInstructorFinal(sdat) {
   hideAllScreens();
   show("screenInstructorFinal");
+
+  updateTopbarSessionPill(); // NEW
 
   $("finalHeader").textContent = `Completed rounds: ${sdat.currentRound} of ${sdat.params.rounds}`;
   const R = sdat.currentRound;
