@@ -1171,11 +1171,12 @@ function wireUI() {
 
     try {
       const out = await createSession({ pin, params });
-      await instructorAuth(out.sessionId, pin);
+      instructorAuthed = true;                 // you just created it, so allow immediately
       role = "instructor";
       joinCode = out.joinCode;
       await subscribeSession(out.sessionId);
       setHashRoute("instructor", { code: out.joinCode });
+      const out = await createSession({ pin, params });
     } catch (err) {
       $("createHelp").textContent = err.message || String(err);
     }
