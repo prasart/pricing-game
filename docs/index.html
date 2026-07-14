@@ -269,7 +269,8 @@
       <div class="roundHeader" id="betweenHeader"></div>
 
       <div class="grid2">
-        <div class="panel">
+        <div>
+          <div class="panel" id="nextSettingsPanel">
           <h2>Next round settings</h2>
           <div class="panel" id="instructorProjectorSafeSummary"></div>
           <label class="label">Team Visibility</label>
@@ -293,12 +294,22 @@
             <button class="btn" id="btnStartNext">Start next round</button>
             <button class="btn btn--danger" id="btnEndEarly">End game early</button>
           </div>
-          <div class="muted small" id="betweenHelp"></div>
-        </div>
-        
-        <div class="panel">
-          <h2>Round results (instructor)</h2>
+          
+            <div class="muted small" id="betweenHelp"></div>
+              </div>
 
+              <div class="panel" id="finalizePanel" hidden>
+                <h2>Game complete</h2>
+                <div class="muted">Final round results are shown. When ready, reveal the final leaderboard.</div>
+                <div class="row">
+                  <button class="btn" id="btnShowFinal">Show final leaderboard</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <h2>Round results (instructor)</h2>
+            
           <div class="row">
             <button class="btn btn--ghost" id="btnToggleFullResults">Show full results</button>
           </div>
