@@ -920,7 +920,7 @@ async function renderInstructorBetween(sdat) {
   if (!rows.length) {
     const sumEl = $("instructorProjectorSafeSummary");
     if (sumEl) {
-      sumEl.innerHTML = `<h2>Projector-safe summary</h2><p class="muted">Results not available yet.</p>`;
+      sumEl.innerHTML = `<h2>Market Summary</h2><p class="muted">Results not available yet.</p>`;
     }
     return;
   }
@@ -950,7 +950,7 @@ async function renderInstructorBetween(sdat) {
     const fmtP = (v) => `$${fmtPrice1(v)}`;
 
     sumEl.innerHTML = `
-      <h2>Projector-safe summary</h2>
+      <h2>Market Summary</h2>
       <div class="kv">
         <div class="k">Min price</div><div class="v">${fmtP(minPrice)}</div>
         <div class="k">Max price</div><div class="v">${fmtP(maxPrice)}</div>
@@ -960,7 +960,6 @@ async function renderInstructorBetween(sdat) {
         <div class="k">Top 3 cumulative profits</div>
         <div class="v">${top3Cum.map(fmt$).join(", ")}</div>
       </div>
-      <p class="muted small">Full table is hidden by default each round.</p>
     `;
   }
 
