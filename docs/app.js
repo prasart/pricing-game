@@ -415,10 +415,19 @@ async function closeRound(sessionId, roundNum) {
 
   await computeAndStoreResults(sessionId, roundNum);
 
+  // NEW: After the final round, stay in "between" so everyone sees round results first.
   if (roundNum >= sdat.params.rounds) {
-    await updateDoc(sessionDoc(sessionId), { instructorKey, status: "ended" });
+    await updateDoc(sessionDoc(sessionId), {
+      instructorKey,
+      status: "between",
+      finalRoundComplete: true
+    });
   } else {
-    await updateDoc(sessionDoc(sessionId), { instructorKey, status: "between" });
+    await updateDoc(sessionDoc(sessionId), {
+      instructorKey,
+      status: "between",
+      finalRoundComplete: false
+    });
   }
 }
 
