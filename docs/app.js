@@ -762,8 +762,9 @@ function updateTopbarSessionPill() {
   const code = lastSessionDoc?.joinCode;
 
   if (role === "instructor" && code) {
+    const baseUrl = `${location.origin}${location.pathname}`.replace(/^https?:\/\//, "").replace(/\/$/, "");
     pill.hidden = false;
-    pill.textContent = `Code: ${code}`;
+    pill.textContent = `URL: ${baseUrl} • Code: ${code}`;
     return;
   }
 
