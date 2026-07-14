@@ -901,16 +901,84 @@ async function renderInstructorBetween(sdat) {
   hideAllScreens();
   show("screenInstructorBetween");
 
-  updateTopbarSessionPill(); // NEW
+  updateTopbarSessionPill();
 
   const r = sdat.currentRound;
   $("betweenHeader").textContent = `Round ${r} complete • Configure Round ${r+1}`;
 
-  const rs = await getDocs(resultsCol(activeSessionId, r));
-  const rows = rs.docs.map(d => d.data()).sort((a,b)=>a.rankRound-b.rankRound || a.teamNumber-b.teamNumber);
-  const adEnabled = rows[0]?.adEnabled ?? false;
-  renderResultsTable($("instructorResultsTable"), rows, { showAd: adEnabled });
+  // Always start hidden each round
+  const fullBlock = $("instructorFullResultsBlock");
+  const toggleBtn = $("btnToggleFullResults");
+  if (fullBlock) fullBlock.hidden = true;
+  if (toggleBtn) toggleBtn.textContent = "Show full results";
 
+  // Load results for round r
+  const rs = await getDocs(resultsCol(activeSessionId, r));
+  const rows = rs.docs.map(d => d.data());
+
+  // Defensive: if results not ready
+  if (!rows.length) {
+    const sumEl = $("instructorProjectorSafeSummary");
+    if (sumEl) {
+      sumEl.innerHTML = `<h2>Projector-safe summary</h2><p class="muted">Results not available yet.</p>`;
+    }
+    return;
+  }
+
+  // Compute projector-safe summary from rows
+  const prices = rows.map(x => Number(x.price));
+  const profitsRound = rows.map(x => Number(x.profitRound));
+  const profitsCum = rows.map(x => Number(x.profitCum));
+
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const medianPrice = (() => {
+    const a = [...prices].sort((x, y) => x - y);
+    const mid = Math.floor(a.length / 2);
+    return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  })();
+
+  const topProfitRound = Math.max(...profitsRound);
+  const industryProfitRound = profitsRound.reduce((a, b) => a + b, 0);
+
+  const top3Cum = [...profitsCum].sort((a, b) => b - a).slice(0, 3);
+
+  // Render projector-safe summary
+  const sumEl = $("instructorProjectorSafeSummary");
+  if (sumEl) {
+    const fmt$ = (v) => `$${fmtMoney0(v)}`;      // uses commas via fmtMoney0
+    const fmtP = (v) => `$${fmtPrice1(v)}`;
+
+    sumEl.innerHTML = `
+      <h2>Projector-safe summary</h2>
+      <div class="kv">
+        <div class="k">Min price</div><div class="v">${fmtP(minPrice)}</div>
+        <div class="k">Max price</div><div class="v">${fmtP(maxPrice)}</div>
+        <div class="k">Median price</div><div class="v">${fmtP(medianPrice)}</div>
+        <div class="k">Top profit (round)</div><div class="v">${fmt$(topProfitRound)}</div>
+        <div class="k">Industry profit (round)</div><div class="v">${fmt$(industryProfitRound)}</div>
+        <div class="k">Top 3 cumulative profits</div>
+        <div class="v">${top3Cum.map(fmt$).join(", ")}</div>
+      </div>
+      <p class="muted small">Full table is hidden by default each round.</p>
+    `;
+  }
+
+  // Prepare full results table (but keep hidden)
+  const sorted = rows.sort((a, b) => a.rankRound - b.rankRound || a.teamNumber - b.teamNumber);
+  const adEnabled = sorted[0]?.adEnabled ?? false;
+  renderResultsTable($("instructorResultsTable"), sorted, { showAd: adEnabled });
+
+  // Wire toggle
+  if (toggleBtn && fullBlock) {
+    toggleBtn.onclick = () => {
+      const willShow = fullBlock.hidden;
+      fullBlock.hidden = !willShow;
+      toggleBtn.textContent = willShow ? "Hide full results" : "Show full results";
+    };
+  }
+
+  // Next round config (unchanged)
   const next = r + 1;
   if (next <= sdat.params.rounds) {
     const nextSnap = await getDoc(roundDoc(activeSessionId, next));
