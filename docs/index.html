@@ -294,15 +294,23 @@
           </div>
           <div class="muted small" id="betweenHelp"></div>
         </div>
+        
         <div class="panel">
           <h2>Round results (instructor)</h2>
-          <div class="tableWrap">
-            <table class="table" id="instructorResultsTable"></table>
-          </div>
+
           <div class="row">
-            <button class="btn btn--ghost" id="btnExport">Export CSV</button>
+            <button class="btn btn--ghost" id="btnToggleFullResults">Show full results</button>
           </div>
-          <div class="muted small" id="exportHelp"></div>
+
+          <div id="instructorFullResultsBlock" hidden>
+            <div class="tableWrap">
+              <table class="table" id="instructorResultsTable"></table>
+            </div>
+            <div class="row">
+              <button class="btn btn--ghost" id="btnExport">Export CSV</button>
+            </div>
+            <div class="muted small" id="exportHelp"></div>
+          </div>
         </div>
       </div>
 
