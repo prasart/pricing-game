@@ -1350,6 +1350,15 @@ function wireUI() {
     } catch (err) { alert(err.message || String(err)); }
   });
 
+  $("btnShowFinal").addEventListener("click", async () => {
+    try {
+      await updateDoc(sessionDoc(activeSessionId), { instructorKey, status: "ended" });
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  });
+
+  
   $("btnEndEarly").addEventListener("click", ()=> {
     $("confirmEndDialog").showModal();
   });
