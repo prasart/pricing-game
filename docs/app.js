@@ -913,9 +913,22 @@ async function renderInstructorBetween(sdat) {
   updateTopbarSessionPill();
 
   const r = sdat.currentRound;
-  $("betweenHeader").textContent = `Round ${r} complete • Configure Round ${r+1}`;
+  const isFinal = !!sdat.finalRoundComplete;
 
-  // Always start hidden each round
+  // Toggle left-side panels
+  const nextPanel = $("nextSettingsPanel");
+  const finalizePanel = $("finalizePanel");
+  if (isFinal) {
+    if (nextPanel) nextPanel.hidden = true;
+    if (finalizePanel) finalizePanel.hidden = false;
+    $("betweenHeader").textContent = `Round ${r} complete • Game complete`;
+  } else {
+    if (nextPanel) nextPanel.hidden = false;
+    if (finalizePanel) finalizePanel.hidden = true;
+    $("betweenHeader").textContent = `Round ${r} complete • Configure Round ${r + 1}`;
+  }
+
+  // Always start full results hidden each round
   const fullBlock = $("instructorFullResultsBlock");
   const toggleBtn = $("btnToggleFullResults");
   if (fullBlock) fullBlock.hidden = true;
@@ -934,7 +947,7 @@ async function renderInstructorBetween(sdat) {
     return;
   }
 
-  // Compute projector-safe summary from rows
+  // Compute market summary
   const prices = rows.map(x => Number(x.price));
   const profitsRound = rows.map(x => Number(x.profitRound));
   const profitsCum = rows.map(x => Number(x.profitCum));
@@ -949,13 +962,12 @@ async function renderInstructorBetween(sdat) {
 
   const topProfitRound = Math.max(...profitsRound);
   const industryProfitRound = profitsRound.reduce((a, b) => a + b, 0);
-
   const top3Cum = [...profitsCum].sort((a, b) => b - a).slice(0, 3);
 
-  // Render projector-safe summary
+  // Render market summary
   const sumEl = $("instructorProjectorSafeSummary");
   if (sumEl) {
-    const fmt$ = (v) => `$${fmtMoney0(v)}`;      // uses commas via fmtMoney0
+    const fmt$ = (v) => `$${fmtMoney0(v)}`;
     const fmtP = (v) => `$${fmtPrice1(v)}`;
 
     sumEl.innerHTML = `
@@ -972,7 +984,7 @@ async function renderInstructorBetween(sdat) {
     `;
   }
 
-  // Prepare full results table (but keep hidden)
+  // Prepare full results table (hidden by default)
   const sorted = rows.sort((a, b) => a.rankRound - b.rankRound || a.teamNumber - b.teamNumber);
   const adEnabled = sorted[0]?.adEnabled ?? false;
   renderResultsTable($("instructorResultsTable"), sorted, { showAd: adEnabled });
@@ -985,6 +997,9 @@ async function renderInstructorBetween(sdat) {
       toggleBtn.textContent = willShow ? "Hide full results" : "Show full results";
     };
   }
+
+  // If final round complete, do NOT configure next round
+  if (isFinal) return;
 
   // Next round config (unchanged)
   const next = r + 1;
