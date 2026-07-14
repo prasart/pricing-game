@@ -56,3 +56,4 @@ body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Aria
 dialog{border:1px solid var(--border);border-radius:14px;background:rgba(18,26,51,.98);color:var(--text);padding:0}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 dialog .dialog{padding:16px}
+#instructorProjectorSafeSummary {margin: 12px 0;}
