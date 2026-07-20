@@ -150,29 +150,23 @@
 
     <section class="card" id="screenInstructorPIN" hidden>
       <h1>Instructor</h1>
-      <p class="muted">Sign in with Google to create or run a session.</p>
-
-      <div class="row">
-        <button class="btn" id="btnInstructorGoogle">Sign in with Google</button>
-        <button class="btn btn--ghost" id="btnInstructorBack">Back</button>
-      </div>
-
-      <div class="muted small" id="instructorAuthStatus"></div>
-
-      <div class="grid2" style="margin-top:14px;">
+      <p class="muted">Enter your instructor PIN to access instructor features for an existing session, or create a new session.</p>
+      <div class="grid2">
         <div class="panel">
           <h2>Create new session</h2>
           <button class="btn" id="btnCreateSession">Create session</button>
         </div>
-
         <div class="panel">
           <h2>Open existing session</h2>
           <label class="label">Join code</label>
           <input class="input" id="instructorJoinCode" placeholder="e.g., 7Q3K" autocomplete="off" />
+          <label class="label">Instructor PIN</label>
+          <input class="input" id="instructorPIN" placeholder="PIN" autocomplete="off" type="password" />
           <div class="row">
             <button class="btn" id="btnOpenSession">Open</button>
+            <button class="btn btn--ghost" id="btnInstructorBack">Back</button>
           </div>
-          <div class="muted small">Only allowed instructor Google accounts can open sessions.</div>
+          <div class="muted small" id="instructorOpenHelp"></div>
         </div>
       </div>
     </section>
